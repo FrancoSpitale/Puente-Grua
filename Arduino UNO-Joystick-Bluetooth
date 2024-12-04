@@ -1,0 +1,66 @@
+#include <SoftwareSerial.h>
+
+// Pines para el joystick y los botones
+const int pinX = A0;  // Pin analógico para el eje X del joystick
+const int pinY = A1;  // Pin analógico para el eje Y del joystick
+const int buttonPin = 8;  // Botón de emergencia del joystick (D8)
+
+// Pines para los botones de subir y bajar (botones amarillos)
+const int buttonUp = 2;  // Botón amarillo para subir el malacate (D2)
+const int buttonDown = 4;  // Botón amarillo para bajar el malacate (D3)
+
+// Configuración de pines para el módulo Bluetooth
+const int bluetoothTx = 10;  // Pin TX del Arduino (se conecta al RX del Bluetooth)
+const int bluetoothRx = 11;  // Pin RX del Arduino (se conecta al TX del Bluetooth)
+
+// Crear objeto SoftwareSerial para la comunicación con el módulo Bluetooth
+SoftwareSerial Bluetooth(bluetoothTx, bluetoothRx);
+
+void setup() {
+  // Configurar pines del joystick y botones
+  pinMode(pinX, INPUT);
+  pinMode(pinY, INPUT);
+  pinMode(buttonPin, INPUT_PULLUP);  // Botón de emergencia
+  pinMode(buttonUp, INPUT_PULLUP);  // Botón subir
+  pinMode(buttonDown, INPUT_PULLUP);  // Botón bajar
+
+  // Iniciar la comunicación serial con el monitor y el módulo Bluetooth
+  Serial.begin(9600);
+  Bluetooth.begin(9600);  // Asegúrate que el módulo Bluetooth está configurado a 9600 baudios
+
+  Serial.println("Iniciando comunicación con el módulo Bluetooth...");
+  Bluetooth.println("AT");  // Enviar comando AT al módulo Bluetooth
+  delay(1000);
+  
+  if (Bluetooth.available()) {
+    String response = Bluetooth.readString();
+    Serial.print("Respuesta del módulo Bluetooth: ");
+    Serial.println(response);
+  } else {
+    Serial.println("No se recibió respuesta del módulo Bluetooth. Verifica la conexión.");
+  }
+}
+
+void loop() {
+  // Leer los valores del joystick y botones
+  int xValue = analogRead(pinX);  // Lee el valor del eje X
+  int yValue = analogRead(pinY);  // Lee el valor del eje Y
+  int buttonState = digitalRead(buttonPin);  // Lee el estado del botón de emergencia
+  int upState = digitalRead(buttonUp);  // Lee el estado del botón de subir
+  int downState = digitalRead(buttonDown);  // Lee el estado del botón de bajar
+
+  // Crear una cadena con los valores leídos
+  String data = "X: " + String(xValue) + " Y: " + String(yValue) +
+                " Emergency: " + (buttonState == LOW ? "Pressed" : "Not Pressed") +
+                " Up: " + (upState == LOW ? "Pressed" : "Not Pressed") +
+                " Down: " + (downState == LOW ? "Pressed" : "Not Pressed");
+
+  // Enviar los valores por Bluetooth
+  Bluetooth.println(data);
+
+  // También enviar los valores al monitor serial
+  Serial.println(data);
+
+  // Esperar un poco antes de la siguiente lectura
+  delay(100);
+}
