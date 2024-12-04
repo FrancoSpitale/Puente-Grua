@@ -1,0 +1,241 @@
+#include "BluetoothSerial.h"
+
+// Crear instancia de Bluetooth Serial para la comunicación
+BluetoothSerial SerialBT;
+
+// Definiciones para el control del motor conectado a los relés (malacate)
+const int relayUpPin = 13;   // Relé para subir el motor del malacate
+const int relayDownPin = 18; // Relé para bajar el motor del malacate
+const int relayEmergencyPin = 19;  // Relé para emergencia (detener motor)
+
+// Variables para el estado anterior de los botones de control
+bool isUpPressed = false;       // Indica si el botón "Up" está presionado
+bool isDownPressed = false;     // Indica si el botón "Down" está presionado
+bool isEmergencyPressed = false; // Indica si el botón "Emergency" está presionado
+
+// Definiciones para control RS485 (motor 1 conectado - eje Y)
+#define SSerialTxControl 15  // Pin de control de dirección RS485 para el motor 1
+#define RS485Transmit    HIGH  // Señal para iniciar transmisión RS485
+#define RS485Receive     LOW   // Señal para recibir datos RS485
+
+// Definiciones para control RS485 (motor 2 conectado - eje X)
+#define SSerialTxControl2 5   // Pin de control de dirección RS485 para el motor 2
+
+// Límites de velocidad del motor (ajustado a un rango de 0 a 4000)
+const int minSpeed = 0;      // Velocidad mínima del motor
+const int maxSpeed = 4000;   // Velocidad máxima del motor
+
+// Definir la zona muerta del joystick (ajustada para evitar movimientos accidentales)
+const int joystickNeutralMin = 450;  // Valor mínimo del rango neutral del joystick
+const int joystickNeutralMax = 550;  // Valor máximo del rango neutral del joystick
+
+// Definiciones para los finales de carrera
+const int limitSwitchXMin = 2;  // Final de carrera para el límite mínimo del eje X
+const int limitSwitchXMax = 12;  // Final de carrera para el límite máximo del eje X
+const int limitSwitchYMin = 27;  // Final de carrera para el límite mínimo del eje Y
+const int limitSwitchYMax = 14;  // Final de carrera para el límite máximo del eje Y
+
+void setup() {
+  // Iniciar la comunicación serie
+  Serial.begin(9600);
+  
+  // Iniciar Bluetooth como maestro con nombre "ESP32_Master"
+  SerialBT.begin("ESP32_Master", true);  
+  SerialBT.setPin("1234", 4);  // Configurar el PIN de conexión para el HC-06
+
+  // Configurar los pines de los relés como salidas
+  pinMode(relayUpPin, OUTPUT);
+  pinMode(relayDownPin, OUTPUT);
+  pinMode(relayEmergencyPin, OUTPUT);
+
+  // Iniciar comunicación RS485 para el motor 1 en Serial2 (pines 16 y 17)
+  Serial2.begin(115200, SERIAL_8N1, 27, 26);
+  
+  // Iniciar comunicación RS485 para el motor 2 en Serial1 (pines 27 y 26)
+  Serial1.begin(115200, SERIAL_8N1, 17, 16);
+
+  // Configurar pines de control de dirección para los dos motores
+  pinMode(SSerialTxControl, OUTPUT);   // Control para el motor 1
+  pinMode(SSerialTxControl2, OUTPUT);  // Control para el motor 2
+
+  // Configurar ambos RS485 para recibir datos por defecto
+  digitalWrite(SSerialTxControl, RS485Receive);
+  digitalWrite(SSerialTxControl2, RS485Receive);
+
+  // Configurar pines de los finales de carrera como entradas
+  pinMode(limitSwitchXMin, INPUT_PULLUP);
+  pinMode(limitSwitchXMax, INPUT_PULLUP);
+  pinMode(limitSwitchYMin, INPUT_PULLUP);
+  pinMode(limitSwitchYMax, INPUT_PULLUP);
+
+  // Intentar conectar al módulo Bluetooth HC-06
+  Serial.println("Intentando conectar al HC-06...");
+  
+  // Verificar si la conexión es exitosa
+  if (SerialBT.connect("HC-06")) {
+    Serial.println("Conectado al HC-06.");
+  } else {
+    Serial.println("Fallo en la conexión.");
+  }
+}
+
+void loop() {
+  // Verificar si hay datos disponibles del Bluetooth
+  if (SerialBT.available()) {
+    // Leer la cadena de datos hasta encontrar un salto de línea
+    String incomingData = SerialBT.readStringUntil('\n');
+    Serial.print("Datos recibidos: ");
+    Serial.println(incomingData);
+    
+    // Procesar los comandos recibidos desde el joystick y los botones
+    handleJoystickAndButtonCommands(incomingData);
+  }
+}
+
+void handleJoystickAndButtonCommands(String data) {
+  // Buscar los índices de los valores X y Y del joystick en la cadena de datos
+  int xIndex = data.indexOf("X: ");
+  int yIndex = data.indexOf("Y: ");
+  
+  // Verificar si los valores X y Y se encuentran en la cadena de datos
+  if (xIndex != -1 && yIndex != -1) {
+    // Extraer los valores X y Y del joystick
+    int xValue = data.substring(xIndex + 3, yIndex - 1).toInt();  // Valor del eje X
+    int yValue = data.substring(yIndex + 3, data.indexOf(' ', yIndex + 3)).toInt();  // Valor del eje Y
+
+    // Controlar el motor 1 (eje Y) utilizando el valor del eje Y del joystick
+    controlMotor(yValue, joystickNeutralMin, joystickNeutralMax, SSerialTxControl, Serial2, limitSwitchYMin, limitSwitchYMax, 0x01);
+
+    // Controlar el motor 2 (eje X) utilizando el valor del eje X del joystick
+    controlMotor(xValue, joystickNeutralMin, joystickNeutralMax, SSerialTxControl2, Serial1, limitSwitchXMin, limitSwitchXMax, 0x02);
+  }
+
+  // Verificar el estado de los botones de control (Up, Down, Emergency) y activar los relés correspondientes
+
+  // Si se detecta el botón "Up" presionado y no estaba presionado antes
+  if (data.indexOf("Up: Pressed") != -1 && !isUpPressed) {
+    digitalWrite(relayUpPin, HIGH);  // Activar el relé para subir el motor del malacate
+    Serial.println("Subiendo motor del malacate...");
+    isUpPressed = true;
+  } 
+  // Si se detecta el botón "Up" soltado y estaba presionado antes
+  else if (data.indexOf("Up: Not Pressed") != -1 && isUpPressed) {
+    digitalWrite(relayUpPin, LOW);  // Desactivar el relé de subida
+    Serial.println("Detener subida del malacate.");
+    isUpPressed = false;
+  }
+
+  // Si se detecta el botón "Down" presionado y no estaba presionado antes
+  if (data.indexOf("Down: Pressed") != -1 && !isDownPressed) {
+    digitalWrite(relayDownPin, HIGH);  // Activar el relé para bajar el motor del malacate
+    Serial.println("Bajando motor del malacate...");
+    isDownPressed = true;
+  } 
+  // Si se detecta el botón "Down" soltado y estaba presionado antes
+  else if (data.indexOf("Down: Not Pressed") != -1 && isDownPressed) {
+    digitalWrite(relayDownPin, LOW);  // Desactivar el relé de bajada
+    Serial.println("Detener bajada del malacate.");
+    isDownPressed = false;
+  }
+
+  // Si se detecta el botón "Emergency" presionado y no estaba presionado antes
+  if (data.indexOf("Emergency: Pressed") != -1 && !isEmergencyPressed) {
+    digitalWrite(relayEmergencyPin, HIGH);  // Activar el relé de emergencia (detener motor)
+    Serial.println("Emergencia activada.");
+    isEmergencyPressed = true;
+  } 
+  // Si se detecta el botón "Emergency" soltado y estaba presionado antes
+  else if (data.indexOf("Emergency: Not Pressed") != -1 && isEmergencyPressed) {
+    digitalWrite(relayEmergencyPin, LOW);  // Desactivar el relé de emergencia
+    Serial.println("Emergencia desactivada.");
+    isEmergencyPressed = false;
+  }
+}
+
+// Función para controlar la velocidad y dirección de un motor, con verificación de finales de carrera
+void controlMotor(int joystickValue, int neutralMin, int neutralMax, int txControlPin, HardwareSerial& motorSerial, int limitSwitchMin, int limitSwitchMax, uint8_t motorAddress) {
+  int scaledSpeed;      // Variable para la velocidad escalada del motor
+  uint16_t direction;   // Variable para la dirección del motor
+
+  // Verificar los estados de los finales de carrera
+  bool isAtMinLimit = digitalRead(limitSwitchMin) == LOW;  // Final de carrera mínimo activado
+  bool isAtMaxLimit = digitalRead(limitSwitchMax) == LOW;  // Final de carrera máximo activado
+
+  // Si el valor del joystick es mayor que el valor máximo de la zona muerta (mover adelante) y no está en el final de carrera máximo
+  if (joystickValue > neutralMax && !isAtMaxLimit) {  
+    scaledSpeed = map(joystickValue, neutralMax, 1023, minSpeed, maxSpeed);  // Escalar el valor del joystick a velocidad
+    direction = 0x0001;  // Dirección hacia adelante
+  } 
+  // Si el valor del joystick es menor que el valor mínimo de la zona muerta (mover atrás) y no está en el final de carrera mínimo
+  else if (joystickValue < neutralMin && !isAtMinLimit) {  
+    scaledSpeed = map(joystickValue, neutralMin, 0, minSpeed, maxSpeed);  // Escalar el valor del joystick a velocidad
+    direction = 0x0002;  // Dirección hacia atrás
+  } 
+  // Si el valor del joystick está dentro de la zona muerta (detener motor)
+  else {  
+    scaledSpeed = 0;      // Velocidad cero
+    direction = 0x0006;   // Comando para detener el motor
+  }
+
+  // Ajustar la velocidad y dirección del motor
+  setMotorSpeed(scaledSpeed, direction, txControlPin, motorSerial, motorAddress);  
+}
+
+// Función para establecer la velocidad y dirección del motor por RS485
+void setMotorSpeed(int speed, uint16_t direction, int txControlPin, HardwareSerial& motorSerial, uint8_t motorAddress) {
+  // Enviar la dirección del motor (motorAddress) y la velocidad (0x1000) en la misma trama Modbus
+  sendModbusCommand(motorAddress, 0x2000, direction, txControlPin, motorSerial);  // Establecer la dirección del motor
+  delay(15);  // Esperar un poco entre los comandos
+  sendModbusCommand(motorAddress, 0x1000, speed, txControlPin, motorSerial);  // Establecer la velocidad del motor
+}
+
+// Función para enviar comandos Modbus a los motores
+void sendModbusCommand(uint8_t slaveID, uint16_t reg, uint16_t value, int txControlPin, HardwareSerial& motorSerial) {
+  uint8_t message[8];   // Arreglo para almacenar el mensaje Modbus
+  
+  // Configurar el mensaje Modbus
+  message[0] = slaveID;              // ID del esclavo
+  message[1] = 0x06;                 // Código de función 6 (escribir un registro)
+  message[2] = highByte(reg);        // Parte alta del registro
+  message[3] = lowByte(reg);         // Parte baja del registro
+  message[4] = highByte(value);      // Parte alta del valor
+  message[5] = lowByte(value);       // Parte baja del valor
+
+  // Calcular el CRC del mensaje
+  uint16_t crc = calculateCRC(message, 6);
+  message[6] = lowByte(crc);         // Parte baja del CRC
+  message[7] = highByte(crc);        // Parte alta del CRC
+
+  // Configurar el RS485 para transmitir
+  digitalWrite(txControlPin, RS485Transmit);
+  
+  // Enviar el mensaje Modbus por el puerto serie del motor
+  for (int i = 0; i < 8; i++) {
+    motorSerial.write(message[i]);
+  }
+  
+  // Esperar un poco para que la transmisión se complete
+  delay(10);
+  
+  // Configurar el RS485 para recibir
+  digitalWrite(txControlPin, RS485Receive);
+}
+
+// Función para calcular el CRC del mensaje Modbus
+uint16_t calculateCRC(uint8_t *buffer, uint8_t length) {
+  uint16_t crc = 0xFFFF;   // Inicializar el CRC con 0xFFFF
+  
+  // Calcular el CRC para cada byte del buffer
+  for (int pos = 0; pos < length; pos++) {
+    crc ^= (uint16_t)buffer[pos];  // XOR byte en el byte menos significativo del CRC
+    for (int i = 8; i != 0; i--) {  // Procesar 8 bits
+      if ((crc & 0x0001) != 0) {    // Si el bit menos significativo es 1
+        crc >>= 1;                  // Desplazar a la derecha
+        crc ^= 0xA001;              // Hacer XOR con el polinomio
+      } else {
+        crc >>= 1;                  // Solo desplazar a la derecha
+      }
+    }
+  }
+  return crc;  // Retornar el CRC calculado
+}
